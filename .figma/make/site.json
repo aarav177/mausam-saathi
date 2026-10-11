@@ -1,0 +1,12 @@
+{
+  "title": "Mausam Saathi | Palwal Farmer Advisory Pilot",
+  "description": "A Palwal pilot for exploring village-level historical monsoon model results and practical crop guidance in local languages. Not a live weather forecast.",
+  "language": "hi",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
