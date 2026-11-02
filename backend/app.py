@@ -14,6 +14,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -31,6 +32,8 @@ from openai import (
     RateLimitError,
 )
 from pydantic import BaseModel, Field
+
+from backend.sms import get_provider
 
 
 PORTAL_ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +102,18 @@ class AccountProfile(BaseModel):
     sms_alert_opt_in: bool = False
 
 
+class SmsTestRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=30)
+
+
+class SmsDemoRequest(BaseModel):
+    recipient: str = Field(min_length=10, max_length=24)
+
+
+class PhoneOtpVerification(BaseModel):
+    otp: str = Field(pattern=r"^\d{6}$")
+
+
 def _get_session_secret() -> bytes:
     try:
         with SESSION_SECRET_PATH.open("xb") as secret_file:
@@ -134,7 +149,131 @@ def _get_auth_db() -> sqlite3.Connection:
         connection.execute(
             "ALTER TABLE users ADD COLUMN sms_alert_opt_in INTEGER NOT NULL DEFAULT 0"
         )
+    if "phone_verified_at" not in columns:
+        connection.execute("ALTER TABLE users ADD COLUMN phone_verified_at TEXT")
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sms_messages (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            recipient TEXT NOT NULL,
+            message TEXT NOT NULL,
+            status TEXT NOT NULL,
+            provider_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sms_messages_user_created "
+        "ON sms_messages(user_id, created_at DESC)"
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS phone_otp_challenges (
+            user_id TEXT PRIMARY KEY,
+            phone_number TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            resend_count INTEGER NOT NULL DEFAULT 0,
+            send_window_started_at INTEGER NOT NULL,
+            send_count INTEGER NOT NULL DEFAULT 1,
+            last_sent_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )"""
+    )
+    connection.commit()
     return connection
+
+
+def _sms_configuration() -> dict:
+    enabled = os.getenv("SMS_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes"
+    }
+    test_mode = os.getenv("SMS_TEST_MODE", "true").strip().lower() in {
+        "1", "true", "yes"
+    }
+    provider = os.getenv("SMS_PROVIDER", "msg91").strip().lower()
+    required = (
+        "MSG91_AUTH_KEY",
+        "MSG91_OTP_TEMPLATE_ID",
+        "MSG91_SMS_TEMPLATE_ID",
+        "SMS_DLT_APPROVED",
+        "SMS_DLT_ENTITY_ID",
+        "SMS_DLT_SENDER_ID",
+        "SMS_DLT_OTP_TEMPLATE_ID",
+        "SMS_DLT_TEMPLATE_ID",
+    )
+    dlt_approved = os.getenv("SMS_DLT_APPROVED", "false").strip().lower() in {
+        "1", "true", "yes"
+    }
+    configuration_complete = provider == "msg91" and dlt_approved and all(
+        os.getenv(name, "").strip() for name in required
+    )
+    try:
+        otp_expiry_seconds = int(os.getenv("SMS_OTP_EXPIRY_SECONDS", "300"))
+    except ValueError:
+        otp_expiry_seconds = 300
+    try:
+        otp_resend_cooldown_seconds = int(
+            os.getenv("SMS_OTP_RESEND_COOLDOWN_SECONDS", "30")
+        )
+    except ValueError:
+        otp_resend_cooldown_seconds = 30
+    return {
+        "enabled": enabled,
+        "available": enabled and configuration_complete,
+        "configuration_complete": configuration_complete,
+        "test_mode": test_mode,
+        "provider": provider,
+        "otp_expiry_seconds": min(900, max(60, otp_expiry_seconds)),
+        "otp_resend_cooldown_seconds": min(
+            300, max(10, otp_resend_cooldown_seconds)
+        ),
+    }
+
+
+def _msg91_provider(config: dict):
+    return get_provider(
+        test_mode=config["test_mode"],
+        provider=config["provider"],
+        credentials={
+            "auth_key": os.getenv("MSG91_AUTH_KEY", "").strip(),
+            "otp_template_id": os.getenv("MSG91_OTP_TEMPLATE_ID", "").strip(),
+            "sms_template_id": os.getenv("MSG91_SMS_TEMPLATE_ID", "").strip(),
+        },
+    )
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _require_indian_mobile(phone_number: str | None) -> str:
+    if phone_number is None or not re.fullmatch(r"\+91[6-9]\d{9}", phone_number):
+        raise HTTPException(
+            status_code=422,
+            detail="SMS delivery requires a valid +91 Indian mobile number.",
+        )
+    return phone_number
+
+
+def _require_sms_recipient(connection: sqlite3.Connection, user_id: str) -> str:
+    row = connection.execute(
+        """SELECT phone_number, sms_alert_opt_in, phone_verified_at
+           FROM users WHERE id = ?""",
+        (user_id,),
+    ).fetchone()
+    if row is None or not row["sms_alert_opt_in"]:
+        raise HTTPException(
+            status_code=403, detail="SMS alerts are not enabled for this account."
+        )
+    if not row["phone_number"] or not row["phone_verified_at"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Verify your phone number before receiving SMS alerts.",
+        )
+    return _require_indian_mobile(row["phone_number"])
 
 
 def _hash_password(password: str, salt: bytes) -> bytes:
@@ -464,6 +603,352 @@ def health() -> dict:
     }
 
 
+@app.get("/api/sms/status")
+def sms_service_status(user: dict = Depends(require_user)) -> dict:
+    config = _sms_configuration()
+    return {
+        "configured": config["configuration_complete"],
+        "enabled": config["available"],
+        "test_mode": config["test_mode"],
+        "provider": config["provider"],
+        "live_delivery_available": config["available"] and not config["test_mode"],
+        "message": (
+            "Test mode records simulated messages only; OTP verification is unavailable."
+            if config["test_mode"]
+            else "SMS is enabled." if config["available"] else "SMS is disabled until MSG91 credentials and DLT templates are configured."
+        ),
+    }
+
+
+@app.get("/api/notifications/status")
+def notification_status(user: dict = Depends(require_user)) -> dict:
+    config = _sms_configuration()
+    with contextlib.closing(_get_auth_db()) as connection:
+        profile = connection.execute(
+            "SELECT phone_number, sms_alert_opt_in, phone_verified_at FROM users WHERE id = ?",
+            (user["id"],),
+        ).fetchone()
+        messages = connection.execute(
+            """SELECT id, recipient, message, status, provider_id, created_at, updated_at
+               FROM sms_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT 20""",
+            (user["id"],),
+        ).fetchall()
+        challenge = connection.execute(
+            "SELECT phone_number, expires_at, resend_count FROM phone_otp_challenges WHERE user_id = ?",
+            (user["id"],),
+        ).fetchone()
+    return {
+        "sms_configured": config["configuration_complete"],
+        "sms_enabled": config["available"],
+        "test_mode": config["test_mode"],
+        "live_delivery_available": config["available"] and not config["test_mode"],
+        "opted_in": bool(profile["sms_alert_opt_in"]),
+        "phone_number": profile["phone_number"],
+        "phone_verified": bool(profile["phone_verified_at"]),
+        "otp_pending": bool(
+            challenge
+            and challenge["phone_number"] == profile["phone_number"]
+            and challenge["expires_at"] > int(time.time())
+        ),
+        "eligible_for_alerts": bool(
+            profile["sms_alert_opt_in"]
+            and profile["phone_number"]
+            and profile["phone_verified_at"]
+        ),
+        "messages": [dict(message) for message in messages],
+    }
+
+
+@app.post("/api/notifications/demo")
+def demo_sms(request: SmsDemoRequest, user: dict = Depends(require_user)) -> dict:
+    """Create a local-only weather alert demonstration in the user's outbox."""
+    recipient = _require_indian_mobile(_normalize_phone(request.recipient))
+    message = (
+        "DEMO • Mausam Sathi: Palwal, Haryana: Heavy rain expected this evening "
+        "(40–60 mm). Clear field drains and postpone pesticide spraying. "
+        "Sample demonstration only; not a live forecast."
+    )
+    message_id = uuid.uuid4().hex
+    now = _utc_now()
+    with contextlib.closing(_get_auth_db()) as connection:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """INSERT INTO sms_messages
+                   (id, user_id, recipient, message, status, provider_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'simulated', NULL, ?, ?)""",
+                (message_id, user["id"], recipient, message, now, now),
+            )
+    return {
+        "id": message_id,
+        "recipient": recipient,
+        "message": message,
+        "status": "simulated",
+        "status_label": "Simulated SMS Sent",
+        "delivered": False,
+        "created_at": now,
+    }
+
+
+@app.post("/api/notifications/test")
+def test_sms(request: SmsTestRequest, user: dict = Depends(require_user)) -> dict:
+    config = _sms_configuration()
+    if not config["available"]:
+        raise HTTPException(status_code=503, detail="SMS service is disabled or not fully configured.")
+    if config["test_mode"]:
+        message = request.message.strip()
+        if not message:
+            raise HTTPException(status_code=422, detail="Message cannot be blank.")
+        message_id = uuid.uuid4().hex
+        now = _utc_now()
+        with contextlib.closing(_get_auth_db()) as connection:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                recipient = _require_sms_recipient(connection, user["id"])
+                try:
+                    result = get_provider(
+                        test_mode=True, provider=config["provider"], credentials={}
+                    ).send(recipient, message)
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=503, detail="SMS test provider is unavailable."
+                    ) from exc
+                if result.status != "simulated" or result.provider_id is not None:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="The test provider returned an invalid simulation result.",
+                    )
+                connection.execute(
+                    """INSERT INTO sms_messages
+                       (id, user_id, recipient, message, status, provider_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, 'simulated', NULL, ?, ?)""",
+                    (message_id, user["id"], recipient, message, now, now),
+                )
+        return {
+            "id": message_id,
+            "status": "simulated",
+            "delivered": False,
+            "detail": "Simulation recorded; no SMS was sent.",
+            "created_at": now,
+        }
+    message = request.message.strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="Message cannot be blank.")
+    if len(message) > 30:
+        raise HTTPException(status_code=422, detail="The approved DLT template allows a maximum 30-character variable.")
+    adapter = _msg91_provider(config)
+    message_id = uuid.uuid4().hex
+    now = _utc_now()
+    provider_failed = False
+    with contextlib.closing(_get_auth_db()) as connection:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            recipient = _require_sms_recipient(connection, user["id"])
+            try:
+                result = adapter.send(recipient, message)
+            except Exception as exc:
+                logger.warning("SMS provider submission failed: %s", type(exc).__name__)
+                provider_failed = True
+                result = None
+            connection.execute(
+                """INSERT INTO sms_messages
+                   (id, user_id, recipient, message, status, provider_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    message_id,
+                    user["id"],
+                    recipient,
+                    message,
+                    result.status if result else "failed",
+                    result.provider_id if result else None,
+                    now,
+                    now,
+                ),
+            )
+    if provider_failed:
+        raise HTTPException(status_code=502, detail="SMS provider could not accept the message.")
+    return {
+        "id": message_id,
+        "status": result.status,
+        "delivered": False,
+        "detail": "Provider accepted the request; handset delivery is not confirmed.",
+        "created_at": now,
+    }
+
+
+def _send_phone_otp(user_id: str, *, resend: bool) -> dict:
+    config = _sms_configuration()
+    if not config["available"] or config["test_mode"]:
+        raise HTTPException(
+            status_code=503,
+            detail="OTP verification requires enabled live SMS with complete MSG91 and DLT configuration.",
+        )
+    now = int(time.time())
+    expiry_seconds = config["otp_expiry_seconds"]
+    cooldown_seconds = config["otp_resend_cooldown_seconds"]
+    adapter = _msg91_provider(config)
+    provider_failed = False
+    provider_id = None
+    phone_number = ""
+    expires_at = now + expiry_seconds
+    with contextlib.closing(_get_auth_db()) as connection:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            account = connection.execute(
+                "SELECT phone_number, phone_verified_at FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if account is None or not account["phone_number"]:
+                raise HTTPException(status_code=422, detail="Add a valid mobile number to your profile first.")
+            phone_number = account["phone_number"]
+            _require_indian_mobile(phone_number)
+            if account["phone_verified_at"]:
+                raise HTTPException(status_code=409, detail="This phone number is already verified.")
+            challenge = connection.execute(
+                "SELECT * FROM phone_otp_challenges WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            same_phone = challenge and challenge["phone_number"] == phone_number
+            if resend and (not same_phone or challenge["expires_at"] <= now):
+                raise HTTPException(status_code=409, detail="There is no active OTP to resend.")
+            if not resend and same_phone and challenge["expires_at"] > now:
+                raise HTTPException(status_code=409, detail="An OTP is already active. Verify it or request a resend.")
+            window_start = challenge["send_window_started_at"] if same_phone else now
+            send_count = challenge["send_count"] if same_phone else 0
+            resend_count = challenge["resend_count"] if same_phone else 0
+            attempt_count = challenge["attempt_count"] if same_phone else 0
+            last_sent = challenge["last_sent_at"] if same_phone else 0
+            if now - window_start >= 3600:
+                window_start, send_count, resend_count, attempt_count = now, 0, 0, 0
+            if last_sent and now - last_sent < cooldown_seconds:
+                raise HTTPException(status_code=429, detail="Please wait before requesting another OTP.")
+            if send_count >= 5 or (resend and resend_count >= 3):
+                raise HTTPException(status_code=429, detail="OTP send limit reached. Try again later.")
+            if attempt_count >= 5:
+                raise HTTPException(status_code=429, detail="Verification attempts are exhausted. Try again after the current limit window.")
+            try:
+                provider_id = adapter.send_otp(
+                    phone_number, expiry_minutes=(expiry_seconds + 59) // 60
+                )
+            except Exception as exc:
+                provider_failed = True
+                expires_at = now
+                logger.warning("OTP provider submission failed: %s", type(exc).__name__)
+            if not resend:
+                resend_count = 0
+            else:
+                resend_count += 1
+            send_count += 1
+            connection.execute(
+                """INSERT INTO phone_otp_challenges
+                   (user_id, phone_number, expires_at, attempt_count, resend_count,
+                    send_window_started_at, send_count, last_sent_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                    phone_number=excluded.phone_number,
+                    expires_at=excluded.expires_at,
+                    attempt_count=excluded.attempt_count,
+                    resend_count=excluded.resend_count,
+                    send_window_started_at=excluded.send_window_started_at,
+                    send_count=excluded.send_count,
+                    last_sent_at=excluded.last_sent_at,
+                    updated_at=excluded.updated_at""",
+                (
+                    user_id,
+                    phone_number,
+                    expires_at,
+                    attempt_count,
+                    resend_count,
+                    window_start,
+                    send_count,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO sms_messages
+                   (id, user_id, recipient, message, status, provider_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    uuid.uuid4().hex,
+                    user_id,
+                    phone_number,
+                    "Phone verification code resent" if resend else "Phone verification code requested",
+                    "failed" if provider_failed else "submitted",
+                    provider_id,
+                    _utc_now(),
+                    _utc_now(),
+                ),
+            )
+    if provider_failed:
+        raise HTTPException(status_code=502, detail="MSG91 could not accept the OTP request.")
+    return {"status": "submitted", "expires_in_seconds": expiry_seconds, "resend_after_seconds": cooldown_seconds}
+
+
+@app.post("/api/auth/phone/otp/send")
+def send_phone_otp(user: dict = Depends(require_user)) -> dict:
+    return _send_phone_otp(user["id"], resend=False)
+
+
+@app.post("/api/auth/phone/otp/resend")
+def resend_phone_otp(user: dict = Depends(require_user)) -> dict:
+    return _send_phone_otp(user["id"], resend=True)
+
+
+@app.post("/api/auth/phone/otp/verify")
+def verify_phone_otp(
+    request: PhoneOtpVerification,
+    user: dict = Depends(require_user),
+) -> dict:
+    if not re.fullmatch(r"\d{6}", request.otp):
+        raise HTTPException(status_code=422, detail="Enter the six-digit verification code.")
+    config = _sms_configuration()
+    if not config["available"] or config["test_mode"]:
+        raise HTTPException(status_code=503, detail="OTP verification requires enabled live SMS with complete MSG91 and DLT configuration.")
+    now = int(time.time())
+    adapter = _msg91_provider(config)
+    verified = False
+    provider_failed = False
+    with contextlib.closing(_get_auth_db()) as connection:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            account = connection.execute(
+                "SELECT phone_number, phone_verified_at FROM users WHERE id = ?",
+                (user["id"],),
+            ).fetchone()
+            challenge = connection.execute(
+                "SELECT * FROM phone_otp_challenges WHERE user_id = ?",
+                (user["id"],),
+            ).fetchone()
+            if account is None or not challenge or challenge["phone_number"] != account["phone_number"]:
+                raise HTTPException(status_code=400, detail="Request a phone verification code first.")
+            if challenge["expires_at"] <= now:
+                raise HTTPException(status_code=400, detail="That verification code has expired. Request a new one.")
+            if challenge["attempt_count"] >= 5:
+                raise HTTPException(status_code=429, detail="Too many incorrect codes. Request a new code later.")
+            try:
+                verified = adapter.verify_otp(account["phone_number"], request.otp)
+            except Exception as exc:
+                provider_failed = True
+                logger.warning("OTP verification request failed: %s", type(exc).__name__)
+            if verified:
+                connection.execute(
+                    "UPDATE users SET phone_verified_at = ? WHERE id = ? AND phone_number = ?",
+                    (_utc_now(), user["id"], account["phone_number"]),
+                )
+                connection.execute("DELETE FROM phone_otp_challenges WHERE user_id = ?", (user["id"],))
+            elif not provider_failed:
+                connection.execute(
+                    "UPDATE phone_otp_challenges SET attempt_count = attempt_count + 1, updated_at = ? WHERE user_id = ?",
+                    (now, user["id"]),
+                )
+    if provider_failed:
+        raise HTTPException(status_code=502, detail="MSG91 could not verify the code.")
+    if not verified:
+        raise HTTPException(status_code=400, detail="The verification code is incorrect.")
+    return {"verified": True}
+
+
 @app.get("/api/coverage")
 def coverage() -> dict:
     villages = get_villages()
@@ -522,18 +1007,37 @@ def update_account_profile(
     with contextlib.closing(_get_auth_db()) as connection:
         with connection:
             connection.execute(
+                "DELETE FROM phone_otp_challenges WHERE user_id = ? AND phone_number IS NOT ?",
+                (user["id"], phone_number),
+            )
+            connection.execute(
                 """
                 UPDATE users
-                SET full_name = ?, phone_number = ?, sms_alert_opt_in = ?
+                SET full_name = ?,
+                    phone_verified_at = CASE
+                        WHEN phone_number IS NOT ? THEN NULL
+                        ELSE phone_verified_at
+                    END,
+                    phone_number = ?, sms_alert_opt_in = ?
                 WHERE id = ?
                 """,
-                (full_name, phone_number, int(profile.sms_alert_opt_in), user["id"]),
+                (
+                    full_name,
+                    phone_number,
+                    phone_number,
+                    int(profile.sms_alert_opt_in),
+                    user["id"],
+                ),
             )
+        updated = connection.execute(
+            "SELECT phone_verified_at FROM users WHERE id = ?", (user["id"],)
+        ).fetchone()
     return {
         "username": user["username"],
         "full_name": full_name,
         "phone_number": phone_number,
         "sms_alert_opt_in": profile.sms_alert_opt_in,
+        "phone_verified": bool(updated["phone_verified_at"]),
     }
 
 
