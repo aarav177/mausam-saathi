@@ -31,6 +31,18 @@ type Village = {
   latitude: number
   longitude: number
 }
+type NotificationStatus = {
+  sms_configured: boolean
+  sms_enabled: boolean
+  test_mode: boolean
+  live_delivery_available: boolean
+  opted_in: boolean
+  phone_number: string | null
+  phone_verified: boolean
+  otp_pending: boolean
+  eligible_for_alerts: boolean
+  messages: Array<{ id: string; recipient: string; message: string; status: string; provider_id: string | null; created_at: string }>
+}
 type EventRisk = {
   probability: number
   risk_level: RiskLevel
@@ -264,15 +276,41 @@ const translationsBase = {
     profilePhone: 'मोबाइल नंबर (वैकल्पिक)',
     saveProfile: 'जानकारी सहेजें',
     profileSaved: 'आपकी जानकारी सहेज दी गई।',
+    smsConfigured: 'SMS credentials और DLT values मौजूद हैं',
+    smsNotConfigured: 'SMS credentials या DLT values अधूरे हैं',
+    smsEnabled: 'SMS चालू है',
+    smsDisabled: 'SMS बंद है',
+    smsTestMode: 'टेस्ट मोड: संदेश केवल सिम्युलेट होंगे, भेजे नहीं जाएँगे',
+    phoneVerified: 'मोबाइल नंबर सत्यापित है',
+    phoneNotVerified: 'SMS अलर्ट पाने के लिए मोबाइल नंबर सत्यापित करें',
+    sendOtp: 'सत्यापन कोड भेजें',
+    resendOtp: 'कोड फिर भेजें',
+    verifyOtp: 'कोड सत्यापित करें',
+    otpLabel: 'छह अंकों का सत्यापन कोड',
+    otpSent: 'अनुरोध स्वीकार हुआ। सहेजे गए नंबर पर कोड आए तो भरें।',
+    savePhoneFirst: 'सत्यापन माँगने से पहले मोबाइल नंबर सहेजें।',
+    latestMessageStatus: 'पिछले संदेश की स्थिति',
+    testMessageLabel: 'टेस्ट संदेश (अधिकतम 30 अक्षर)',
+    sendTestSms: 'टेस्ट SMS भेजें',
+    messageSubmitted: 'प्रदाता ने संदेश स्वीकार किया; डिलीवरी की पुष्टि नहीं है।',
+    messageSimulated: 'सिम्युलेशन सहेजा गया। कोई SMS नहीं भेजा गया।',
+    smsDemoTitle: 'SMS डेमो • सिम्युलेटेड',
+    smsDemoDescription: 'Palwal के नमूना मौसम पर किसान अलर्ट बनाकर ऐप में फोन नोटिफिकेशन देखें। credentials या internet की जरूरत नहीं; फोन पर SMS नहीं जाएगा।',
+    demoMobileLabel: 'डेमो भारतीय मोबाइल नंबर',
+    sendDemoSms: 'Send Test SMS',
+    demoPreview: 'स्मार्टफोन नोटिफिकेशन पूर्वावलोकन',
+    demoHistory: 'डेमो संदेश इतिहास',
+    demoSent: 'Simulated SMS Sent',
+    demoEmpty: 'अभी कोई डेमो संदेश नहीं। प्रस्तुति के लिए पहला SMS बनाएँ।',
     accountUsername: 'यूज़रनेम',
-    notificationStatus: 'SMS मौसम अलर्ट अभी चालू नहीं हैं',
-    notificationDetail: 'इस पोर्टल में अभी SMS भेजने की सेवा या आज का लाइव मौसम स्रोत नहीं जुड़ा है। इसलिए यहाँ कोई SMS अलर्ट भेजा नहीं जा रहा।',
+    notificationStatus: 'SMS सूचना सेवा की स्थिति',
+    notificationDetail: 'नीचे SMS सेटअप की स्थिति दी गई है। अपने-आप मौसम अलर्ट के लिए भरोसेमंद लाइव मौसम स्रोत भी चाहिए।',
     notificationWhatWorks: 'अभी आप क्या देख सकते हैं',
     notificationFeatureOne: 'गाँव चुनकर पुराने मौसम मॉडल के संकेत देखें।',
     notificationFeatureTwo: 'फसल और बढ़वार का चरण चुनकर सामान्य खेत-जाँच सुझाव पाएँ।',
-    notificationSetup: 'SMS अलर्ट शुरू करने के लिए संदेश सेवा और भरोसेमंद लाइव मौसम स्रोत जोड़ना होगा।',
-    notificationPreference: 'SMS सेवा शुरू हो तो मुझे सूचना देने की रुचि दर्ज करें',
-    notificationInterestNote: 'यह केवल आपकी रुचि सहेजता है। अभी कोई SMS नहीं भेजा जाएगा।',
+    notificationSetup: 'भरोसेमंद लाइव मौसम स्रोत और अलर्ट नियम जुड़ने तक अपने-आप मौसम अलर्ट उपलब्ध नहीं हैं।',
+    notificationPreference: 'सत्यापन के बाद SMS अलर्ट पाने के लिए मेरी सहमति है',
+    notificationInterestNote: 'SMS अलर्ट पाने के लिए सत्यापित नंबर और चालू सेवा जरूरी है। आप कभी भी सहमति वापस ले सकते हैं।',
     noNotifications: 'अभी कोई नई सूचना नहीं है।',
     goToProfile: 'अलर्ट पसंद बदलें',
     backHome: 'मुख्य पृष्ठ',
@@ -420,15 +458,41 @@ const translationsBase = {
     profilePhone: 'Mobile number (optional)',
     saveProfile: 'Save details',
     profileSaved: 'Your details have been saved.',
+    smsConfigured: 'SMS credentials and DLT values are present',
+    smsNotConfigured: 'SMS credentials or DLT values are incomplete',
+    smsEnabled: 'SMS enabled',
+    smsDisabled: 'SMS disabled',
+    smsTestMode: 'Test mode: messages are simulated, not sent',
+    phoneVerified: 'Phone number verified',
+    phoneNotVerified: 'Verify your phone number to receive SMS alerts',
+    sendOtp: 'Send verification code',
+    resendOtp: 'Resend code',
+    verifyOtp: 'Verify code',
+    otpLabel: 'Six-digit verification code',
+    otpSent: 'Request accepted. Enter the code if it arrives on your saved number.',
+    savePhoneFirst: 'Save the phone number before requesting verification.',
+    latestMessageStatus: 'Latest message status',
+    testMessageLabel: 'Test message (up to 30 characters)',
+    sendTestSms: 'Send test SMS',
+    messageSubmitted: 'Provider accepted the message; delivery is not confirmed.',
+    messageSimulated: 'Simulation saved. No SMS was sent.',
+    smsDemoTitle: 'SMS Demo • Simulated',
+    smsDemoDescription: 'Create a farmer alert from a sample Palwal weather scenario and preview a phone notification here. No provider credentials or internet are needed; nothing is sent to a handset.',
+    demoMobileLabel: 'Demo Indian mobile number',
+    sendDemoSms: 'Send Test SMS',
+    demoPreview: 'Smartphone notification preview',
+    demoHistory: 'Demo message history',
+    demoSent: 'Simulated SMS Sent',
+    demoEmpty: 'No demo messages yet. Create one for your presentation.',
     accountUsername: 'Username',
-    notificationStatus: 'SMS weather alerts are not active yet',
-    notificationDetail: 'This portal has no SMS delivery service or live weather feed connected, so it is not sending SMS alerts.',
+    notificationStatus: 'SMS notification service status',
+    notificationDetail: 'The status below shows SMS setup. Automatic weather alerts also need a validated live weather source.',
     notificationWhatWorks: 'What you can use now',
     notificationFeatureOne: 'Choose a village to explore historical weather model signals.',
     notificationFeatureTwo: 'Choose a crop and growth stage for general field-check guidance.',
-    notificationSetup: 'To activate SMS alerts, the project needs an SMS provider and a reliable live weather source.',
-    notificationPreference: 'Record my interest in SMS alerts if the service becomes available',
-    notificationInterestNote: 'This only saves your interest. No SMS will be sent now.',
+    notificationSetup: 'Automatic weather alerts remain unavailable until a reliable live weather source and alert rules are connected.',
+    notificationPreference: 'I agree to receive SMS alerts after phone verification',
+    notificationInterestNote: 'SMS alerts require a verified number and enabled service. You can opt out at any time.',
     noNotifications: 'There are no new notifications.',
     goToProfile: 'Manage alert preference',
     backHome: 'Home',
@@ -564,15 +628,41 @@ const translations = {
     profilePhone: 'मोबाइल नंबर (जरूरी ना सै)',
     saveProfile: 'जानकारी सहेजो',
     profileSaved: 'थारी जानकारी सहेज दी।',
+    smsConfigured: 'SMS credentials अर DLT values मौजूद सैं',
+    smsNotConfigured: 'SMS credentials अर DLT values अधूरे सैं',
+    smsEnabled: 'SMS चालू सै',
+    smsDisabled: 'SMS बंद सै',
+    smsTestMode: 'टेस्ट मोड: संदेश बस सिम्युलेट होंगे, भेजे ना जावेंगे',
+    phoneVerified: 'मोबाइल नंबर सत्यापित सै',
+    phoneNotVerified: 'SMS अलर्ट खातर मोबाइल नंबर सत्यापित करो',
+    sendOtp: 'सत्यापन कोड भेजो',
+    resendOtp: 'कोड फेर भेजो',
+    verifyOtp: 'कोड सत्यापित करो',
+    otpLabel: 'छह अंकों का सत्यापन कोड',
+    otpSent: 'अनुरोध मान लिया। सहेजे नंबर पै कोड आवै तो भरो।',
+    savePhoneFirst: 'सत्यापन माँगण तै पहले मोबाइल नंबर सहेजो।',
+    latestMessageStatus: 'पिछले संदेश की हालत',
+    testMessageLabel: 'टेस्ट संदेश (अधिकतम 30 अक्षर)',
+    sendTestSms: 'टेस्ट SMS भेजो',
+    messageSubmitted: 'प्रदाता ने संदेश ले लिया; डिलीवरी की पुष्टि ना सै।',
+    messageSimulated: 'सिम्युलेशन सहेज्या। कोई SMS ना भेज्या।',
+    smsDemoTitle: 'SMS डेमो • सिम्युलेटेड',
+    smsDemoDescription: 'Palwal के नमूना मौसम पै किसान अलर्ट बनाओ अर ऐप मैं फोन नोटिफिकेशन देखो। credentials या internet की जरूरत ना; फोन पै SMS ना जावैगा।',
+    demoMobileLabel: 'डेमो भारतीय मोबाइल नंबर',
+    sendDemoSms: 'Send Test SMS',
+    demoPreview: 'फोन नोटिफिकेशन का नमूना',
+    demoHistory: 'डेमो संदेश इतिहास',
+    demoSent: 'Simulated SMS Sent',
+    demoEmpty: 'अभी कोई डेमो संदेश ना सै। प्रस्तुति खातर पहला SMS बनाओ।',
     accountUsername: 'यूज़रनेम',
-    notificationStatus: 'SMS मौसम अलर्ट अभी चालू ना सैं',
-    notificationDetail: 'इस पोर्टल मैं अभी SMS भेजण की सेवा अर आज का लाइव मौसम स्रोत ना जुड़्या। इस खातर इब कोई SMS अलर्ट ना भेज्या जा सै।',
+    notificationStatus: 'SMS सूचना सेवा की हालत',
+    notificationDetail: 'नीचे SMS सेटअप की हालत दिखै सै। अपने-आप मौसम अलर्ट खातर भरोसेमंद लाइव मौसम स्रोत भी चाहिए।',
     notificationWhatWorks: 'इब आप के देख सको हो',
     notificationFeatureOne: 'गाँव चुन कै पुराने मौसम मॉडल के संकेत देखो।',
     notificationFeatureTwo: 'फसल अर बढ़वार का चरण चुन कै खेत-जाँच के आम सुझाव पाओ।',
-    notificationSetup: 'SMS अलर्ट चालू करण खातर SMS सेवा अर भरोसेमंद लाइव मौसम स्रोत जोड़णा पड़ैगा।',
-    notificationPreference: 'SMS सेवा चालू होवै तै मेरी रुचि दर्ज करो',
-    notificationInterestNote: 'यो बस थारी रुचि सहेजै सै। इब कोई SMS ना भेज्या जावैगा।',
+    notificationSetup: 'भरोसेमंद लाइव मौसम स्रोत अर अलर्ट नियम जुड़ण ताईं अपने-आप मौसम अलर्ट उपलब्ध ना सैं।',
+    notificationPreference: 'नंबर सत्यापित होण पाछै SMS अलर्ट खातर मेरी सहमति सै',
+    notificationInterestNote: 'SMS अलर्ट खातर सत्यापित नंबर अर चालू सेवा चाहिए। सहमति कदे भी वापस ले सको हो।',
     noNotifications: 'अभी कोई नई सूचना ना सै।',
     goToProfile: 'अलर्ट की पसंद बदलो',
     backHome: 'मुख्य पन्ना',
@@ -797,6 +887,11 @@ export default function PortalApp() {
   const [profileSmsOptIn, setProfileSmsOptIn] = useState(false)
   const [profileBusy, setProfileBusy] = useState(false)
   const [profileMessage, setProfileMessage] = useState('')
+  const [notificationStatus, setNotificationStatus] = useState<NotificationStatus | null>(null)
+  const [notificationBusy, setNotificationBusy] = useState(false)
+  const [notificationMessage, setNotificationMessage] = useState('')
+  const [otpCode, setOtpCode] = useState('')
+  const [demoRecipient, setDemoRecipient] = useState('9876543210')
   const [readingPage, setReadingPage] = useState(false)
   const [voiceMessage, setVoiceMessage] = useState('')
   const t = translations[language]
@@ -808,6 +903,13 @@ export default function PortalApp() {
   const currentGeneratedAdvice = generatedAdvice?.context === adviceContext
     ? generatedAdvice.answer
     : ''
+  const profilePhoneIsVerified = Boolean(
+    notificationStatus?.phone_verified &&
+    profilePhone === notificationStatus.phone_number,
+  )
+  const demoMessages = notificationStatus?.messages.filter((message) =>
+    message.message.startsWith('DEMO •'),
+  ) ?? []
 
   const completeWelcome = useCallback(() => {
     setWelcomeVisible(false)
@@ -842,6 +944,20 @@ export default function PortalApp() {
     setListeningForQuestion(false)
     return () => speechRecognitionRef.current?.abort()
   }, [activePage, language])
+
+  useEffect(() => {
+    if (!user || (activePage !== 'notifications' && activePage !== 'profile')) return
+    let cancelled = false
+    setNotificationStatus(null)
+    api<NotificationStatus>('/api/notifications/status')
+      .then((status) => {
+        if (!cancelled) setNotificationStatus(status)
+      })
+      .catch(() => {
+        if (!cancelled) setNotificationStatus(null)
+      })
+    return () => { cancelled = true }
+  }, [user, activePage])
 
   useEffect(() => {
     let cancelled = false
@@ -1096,6 +1212,8 @@ export default function PortalApp() {
     try {
       await api<{ authenticated: boolean }>('/api/auth/logout', { method: 'POST' })
       setUser(null)
+      setNotificationStatus(null)
+      setOtpCode('')
       navigate('home')
       setChat([{ role: 'assistant', content: t.assistantHello }])
     } catch (error) {
@@ -1122,11 +1240,75 @@ export default function PortalApp() {
         }),
       })
       setUser(updated)
+      setProfilePhone(updated.phone_number || '')
       setProfileMessage(t.profileSaved)
+      setOtpCode('')
+      void reloadNotificationStatus().catch(() => setNotificationStatus(null))
     } catch (error) {
       setProfileMessage(error instanceof Error ? error.message : t.dataUnavailable)
     } finally {
       setProfileBusy(false)
+    }
+  }
+
+  async function reloadNotificationStatus() {
+    const status = await api<NotificationStatus>('/api/notifications/status')
+    setNotificationStatus(status)
+  }
+
+  async function requestPhoneOtp(resend = false) {
+    setNotificationBusy(true)
+    setNotificationMessage('')
+    try {
+      await api<{ status: string; expires_in_seconds: number }>(
+        resend ? '/api/auth/phone/otp/resend' : '/api/auth/phone/otp/send',
+        { method: 'POST' },
+      )
+      setNotificationMessage(t.otpSent)
+      void reloadNotificationStatus().catch(() => setNotificationStatus(null))
+    } catch (error) {
+      setNotificationMessage(error instanceof Error ? error.message : t.dataUnavailable)
+    } finally {
+      setNotificationBusy(false)
+    }
+  }
+
+  async function verifyPhoneOtp() {
+    setNotificationBusy(true)
+    setNotificationMessage('')
+    try {
+      await api<{ verified: boolean }>('/api/auth/phone/otp/verify', {
+        method: 'POST',
+        body: JSON.stringify({ otp: otpCode }),
+      })
+      setOtpCode('')
+      setNotificationMessage(t.phoneVerified)
+      void reloadNotificationStatus().catch(() => setNotificationStatus(null))
+    } catch (error) {
+      setNotificationMessage(error instanceof Error ? error.message : t.dataUnavailable)
+    } finally {
+      setNotificationBusy(false)
+    }
+  }
+
+  async function sendDemoSms() {
+    setNotificationBusy(true)
+    setNotificationMessage('')
+    try {
+      const result = await api<{ id: string; recipient: string; message: string; status: string; provider_id: null; created_at: string }>('/api/notifications/demo', {
+        method: 'POST',
+        body: JSON.stringify({ recipient: demoRecipient }),
+      })
+      setNotificationStatus((current) => current ? {
+        ...current,
+        messages: [{ ...result }, ...current.messages].slice(0, 20),
+      } : current)
+      setNotificationMessage(t.messageSimulated)
+      void reloadNotificationStatus().catch(() => undefined)
+    } catch (error) {
+      setNotificationMessage(error instanceof Error ? error.message : t.dataUnavailable)
+    } finally {
+      setNotificationBusy(false)
     }
   }
 
@@ -1610,9 +1792,47 @@ export default function PortalApp() {
       {activePage === 'notifications' && (
         <section className="card notification-page">
           <div className="notification-status-icon"><PortalIcon name="notifications" size={26} /></div>
-          <h2>{t.notificationStatus}</h2>
-          <span className="notification-status-badge">{language === 'en' ? 'Not active' : language === 'hr' ? 'चालू ना सै' : 'चालू नहीं'}</span>
-          <p>{t.notificationDetail}</p>
+          <h2>{t.smsDemoTitle}</h2>
+          <p className="sms-demo-disclaimer">DEMO / SIMULATED SMS · No real SMS is sent</p>
+          <p className="sms-demo-description">{t.smsDemoDescription}</p>
+          <div className="sms-status-badges">
+            <span className="notification-status-badge">{notificationStatus?.sms_configured ? t.smsConfigured : t.smsNotConfigured}</span>
+            <span className="notification-status-badge">{notificationStatus?.sms_enabled ? t.smsEnabled : t.smsDisabled}</span>
+          </div>
+          <div className="sms-demo-composer">
+            <label>
+              <span>{t.demoMobileLabel}</span>
+              <input type="tel" inputMode="tel" autoComplete="off" placeholder="+91 98765 43210" value={demoRecipient} onChange={(event) => setDemoRecipient(event.target.value)} maxLength={24} />
+            </label>
+            <button className="primary-button" type="button" disabled={notificationBusy || !demoRecipient.trim()} onClick={() => void sendDemoSms()}>
+              {notificationBusy ? t.loading : t.sendDemoSms}
+            </button>
+            {notificationMessage && <p role="status">{notificationMessage}</p>}
+          </div>
+          <div className="sms-demo-preview-wrap">
+            <h3>{t.demoPreview}</h3>
+            {demoMessages[0] ? (
+              <div className="sms-phone-preview" aria-live="polite">
+                <div className="sms-phone-topline"><span>9:41</span><span>● ● ● ▰</span></div>
+                <div className="sms-phone-notification">
+                  <div className="sms-phone-app"><span className="sms-phone-app-icon">☁</span><span>MAUSAM SATHI <time>{new Date(demoMessages[0].created_at).toLocaleTimeString(language === 'en' ? 'en-IN' : 'hi-IN', { hour: '2-digit', minute: '2-digit' })}</time></span></div>
+                  <strong>{t.demoSent}</strong>
+                  <p>{demoMessages[0].message.replace('DEMO • ', '')}</p>
+                  <small>{demoMessages[0].recipient} · {new Date(demoMessages[0].created_at).toLocaleString(language === 'en' ? 'en-IN' : 'hi-IN')}</small>
+                </div>
+                <div className="sms-phone-home-indicator" />
+              </div>
+            ) : <p className="sms-demo-empty">{t.demoEmpty}</p>}
+          </div>
+          <div className="sms-demo-history">
+            <h3>{t.demoHistory}</h3>
+            {demoMessages.length ? demoMessages.map((message) => (
+              <article className="sms-demo-history-item" key={message.id}>
+                <span className="sms-demo-history-check">✓</span>
+                <div><strong>{t.demoSent}</strong><p>{message.recipient} · {new Date(message.created_at).toLocaleString(language === 'en' ? 'en-IN' : 'hi-IN')}</p><small>{message.message.replace('DEMO • ', '')}</small></div>
+              </article>
+            )) : <p className="sms-demo-empty">{t.demoEmpty}</p>}
+          </div>
           <div className="notification-what-works">
             <h3>{t.notificationWhatWorks}</h3>
             <ul><li>{t.notificationFeatureOne}</li><li>{t.notificationFeatureTwo}</li></ul>
@@ -1632,6 +1852,29 @@ export default function PortalApp() {
             <label><span>{t.profileName}</span><input value={profileName} onChange={(event) => setProfileName(event.target.value)} minLength={2} maxLength={80} required /></label>
             <label><span>{t.accountUsername}</span><input value={user.username} readOnly /></label>
             <label><span>{t.profilePhone}</span><input type="tel" value={profilePhone} onChange={(event) => setProfilePhone(event.target.value)} placeholder="+91 98765 43210" maxLength={24} /></label>
+            <div className="sms-verification-controls">
+              <p className="password-hint">{profilePhoneIsVerified ? t.phoneVerified : t.phoneNotVerified}</p>
+              {!profilePhoneIsVerified && (
+                <>
+                  {!notificationStatus?.otp_pending && (
+                    <button className="secondary-button" type="button" disabled={notificationBusy || !notificationStatus?.sms_enabled || notificationStatus?.test_mode || !profilePhone.trim() || profilePhone !== notificationStatus?.phone_number} onClick={() => void requestPhoneOtp(false)}>
+                      {notificationBusy ? t.loading : t.sendOtp}
+                    </button>
+                  )}
+                  {notificationStatus?.otp_pending && (
+                    <>
+                      <label><span>{t.otpLabel}</span><input inputMode="numeric" autoComplete="one-time-code" value={otpCode} onChange={(event) => setOtpCode(event.target.value.replace(/\D/g, '').slice(0, 6))} maxLength={6} /></label>
+                      <div className="notification-actions">
+                        <button className="primary-button" type="button" disabled={notificationBusy || otpCode.length !== 6} onClick={() => void verifyPhoneOtp()}>{notificationBusy ? t.loading : t.verifyOtp}</button>
+                        <button className="secondary-button" type="button" disabled={notificationBusy} onClick={() => void requestPhoneOtp(true)}>{t.resendOtp}</button>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+              {notificationMessage && <p role="status">{notificationMessage}</p>}
+              {profilePhone && profilePhone !== notificationStatus?.phone_number && <p className="password-hint">{t.savePhoneFirst}</p>}
+            </div>
             <label className="sms-opt-in"><input type="checkbox" checked={profileSmsOptIn} onChange={(event) => setProfileSmsOptIn(event.target.checked)} /><span>{t.notificationPreference}</span></label>
             <p className="password-hint">{t.notificationInterestNote}</p>
             {profileMessage && <div className={`profile-message ${profileMessage === t.profileSaved ? 'success' : 'error'}`} role="status">{profileMessage}</div>}
